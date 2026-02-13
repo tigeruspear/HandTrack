@@ -43,6 +43,141 @@
       transition: all 0.3s ease;
     }
     #audio-control:hover { background: rgba(0,255,204,0.2); border-color: #00ffcc; }
+
+    /* Gallery Page Styles */
+    #gallery-page {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: linear-gradient(135deg, #1a1a2e 0%, #050505 100%);
+      overflow-y: scroll;
+      z-index: 100;
+      scroll-behavior: smooth;
+    }
+
+    #gallery-page.active {
+      display: block;
+    }
+
+    .gallery-header {
+      text-align: center;
+      color: white;
+      padding: 60px 20px 40px;
+      font-size: 2.5rem;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      text-shadow: 0 0 20px rgba(0,255,204,0.5);
+    }
+
+    .gallery-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      padding: 40px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .gallery-item {
+      position: relative;
+      overflow: hidden;
+      border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0, 255, 204, 0.1);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      cursor: pointer;
+    }
+
+    .gallery-item:hover {
+      transform: scale(1.05);
+      box-shadow: 0 8px 32px rgba(0, 255, 204, 0.3);
+    }
+
+    .gallery-item img {
+      width: 100%;
+      height: 300px;
+      object-fit: cover;
+      display: block;
+    }
+
+    .gallery-footer {
+      text-align: center;
+      color: #00ffcc;
+      padding: 40px 20px;
+      font-size: 1.2rem;
+      letter-spacing: 1px;
+    }
+
+    .scroll-indicator {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #00ffcc;
+      font-size: 1.5rem;
+      animation: bounce 2s infinite;
+      pointer-events: none;
+      z-index: 99;
+    }
+
+    @keyframes bounce {
+      0%, 100% { transform: translateX(-50%) translateY(0); }
+      50% { transform: translateX(-50%) translateY(-10px); }
+    }
+
+    .scroll-indicator.hidden {
+      display: none;
+    }
+
+    /* Modal for lightbox */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 200;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.8);
+    }
+
+    .modal.active {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-content {
+      max-width: 90%;
+      max-height: 90%;
+      position: relative;
+    }
+
+    .modal-content img {
+      width: 100%;
+      height: auto;
+      border-radius: 10px;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 20px;
+      right: 30px;
+      color: white;
+      font-size: 2rem;
+      cursor: pointer;
+      background: rgba(0,0,0,0.6);
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+    }
+
+    .modal-close:hover {
+      background: rgba(0,255,204,0.3);
+    }
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -77,6 +212,24 @@
   </div>
 
   <video id="input_video"></video>
+
+  <!-- Scroll Indicator -->
+  <div class="scroll-indicator" id="scroll-indicator">↓ SCROLL ↓</div>
+
+  <!-- Gallery Page -->
+  <div id="gallery-page">
+    <div class="gallery-header">thank you for all the moments</div>
+    <div class="gallery-container" id="gallery-container"></div>
+    <div class="gallery-footer">✨ cherish every memory ✨</div>
+  </div>
+
+  <!-- Lightbox Modal -->
+  <div class="modal" id="lightbox-modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeLightbox()">&times;</button>
+      <img id="lightbox-img" src="" alt="">
+    </div>
+  </div>
 
   <audio id="background-music" autoplay loop>
     <source src="CosmicLove.mp3" type="audio/mpeg">
@@ -492,6 +645,119 @@
       console.error("Camera error:", err);
       loadingText.innerText = "Error: Camera access denied or not available.";
     });
+
+    // --- GALLERY PAGE SCROLL HANDLING ---
+    const galleryPage = document.getElementById('gallery-page');
+    const mainPage = document.body;
+    const scrollIndicator = document.getElementById('scroll-indicator');
+    const galleryContainer = document.getElementById('gallery-container');
+    let isScrolling = false;
+    let currentView = 'main'; // 'main' or 'gallery'
+
+    // Image array with paths relative to deployment
+    const images = [
+      'Images/IMG-20190123-WA0044.jpg',
+      'Images/IMG-20190131-WA0014.jpeg',
+      'Images/IMG_20190118_194333_860.jpg',
+      'Images/IMG_20190129_004922_963.jpg',
+      'Images/IMG_20190129_004934_876.jpg',
+      'Images/IMG_20190129_005130_815.jpg',
+      'Images/photo_2026-01-01_00-37-01.jpg'
+    ];
+
+    // Populate gallery with images
+    function loadGallery() {
+      galleryContainer.innerHTML = '';
+      images.forEach(imgPath => {
+        const item = document.createElement('div');
+        item.className = 'gallery-item';
+        const img = document.createElement('img');
+        img.src = imgPath;
+        img.alt = 'Memory';
+        img.onclick = () => openLightbox(imgPath);
+        item.appendChild(img);
+        galleryContainer.appendChild(item);
+      });
+    }
+    loadGallery();
+
+    // Lightbox functions
+    function openLightbox(imagePath) {
+      const modal = document.getElementById('lightbox-modal');
+      const lightboxImg = document.getElementById('lightbox-img');
+      lightboxImg.src = imagePath;
+      modal.classList.add('active');
+    }
+
+    function closeLightbox() {
+      const modal = document.getElementById('lightbox-modal');
+      modal.classList.remove('active');
+    }
+
+    // Close lightbox on background click
+    document.getElementById('lightbox-modal').onclick = function(event) {
+      if (event.target === this) {
+        closeLightbox();
+      }
+    }
+
+    // Scroll wheel handling for page transition
+    let wheelTimeout;
+    document.addEventListener('wheel', (e) => {
+      clearTimeout(wheelTimeout);
+      if (isScrolling) return;
+
+      if (currentView === 'main' && e.deltaY > 0) {
+        // Scrolling down on main page
+        isScrolling = true;
+        transitionToGallery();
+        wheelTimeout = setTimeout(() => { isScrolling = false; }, 1000);
+      } else if (currentView === 'gallery' && e.deltaY < 0) {
+        // Scrolling up on gallery page
+        if (galleryPage.scrollTop === 0) {
+          isScrolling = true;
+          transitionToMain();
+          wheelTimeout = setTimeout(() => { isScrolling = false; }, 1000);
+        }
+      }
+    }, { passive: true });
+
+    // Touch/swipe support for mobile
+    let touchStartY = 0;
+    document.addEventListener('touchstart', (e) => {
+      touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (isScrolling) return;
+      
+      const touchEndY = e.touches[0].clientY;
+      const diff = touchStartY - touchEndY;
+
+      if (currentView === 'main' && diff > 50) {
+        isScrolling = true;
+        transitionToGallery();
+        setTimeout(() => { isScrolling = false; }, 1000);
+      } else if (currentView === 'gallery' && diff < -50) {
+        if (galleryPage.scrollTop === 0) {
+          isScrolling = true;
+          transitionToMain();
+          setTimeout(() => { isScrolling = false; }, 1000);
+        }
+      }
+    }, { passive: true });
+
+    function transitionToGallery() {
+      currentView = 'gallery';
+      galleryPage.classList.add('active');
+      scrollIndicator.classList.add('hidden');
+    }
+
+    function transitionToMain() {
+      currentView = 'main';
+      galleryPage.classList.remove('active');
+      scrollIndicator.classList.remove('hidden');
+    }
   </script>
 </body>
 </html>
