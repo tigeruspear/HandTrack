@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gesture Controlled 3D Particles</title>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', sans-serif; }
+    canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; }
+
+    #input_video {
+      position: absolute; bottom: 20px; right: 20px;
+      width: 200px; height: 150px;
+      z-index: 2; border-radius: 10px;
+      transform: scaleX(-1);
+      border: 2px solid rgba(255,255,255,0.3);
+    }
+
+    #ui-layer {
+      position: absolute; top: 20px; left: 20px; z-index: 3;
+      color: white; pointer-events: none;
+    }
+    h1 { margin: 0; font-size: 1.5rem; text-transform: uppercase; letter-spacing: 2px; }
+    .status { font-size: 0.9rem; color: #aaa; margin-top: 5px; }
+    .controls {
+      margin-top: 15px; font-size: 0.9rem; line-height: 1.6;
+      background: rgba(0,0,0,0.6); padding: 15px; border-radius: 8px;
+    }
+    .highlight { color: #00ffcc; font-weight: bold; }
+
+    #loading {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      color: white; font-size: 1.2rem; z-index: 10;
+    }
+
+    #audio-control {
+      position: absolute; top: 20px; right: 20px; z-index: 3;
+      background: rgba(0,0,0,0.6); color: white;
+      border: 2px solid rgba(255,255,255,0.3); border-radius: 50%;
+      width: 50px; height: 50px; font-size: 1.5rem;
+      cursor: pointer; pointer-events: auto;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.3s ease;
+    }
+    #audio-control:hover { background: rgba(0,255,204,0.2); border-color: #00ffcc; }
+  </style>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+  <div id="loading">Initializing Camera & AI Model...</div>
+
+  <button id="audio-control" onclick="toggleAudio()" title="Toggle Music">🔊</button>
+
+  <div id="ui-layer">
+    <h1>Particle Gestures</h1>
+    <div class="status" id="status-text">Waiting for hand...</div>
+    <div class="controls">
+      <div>🖐 <b>Controls:</b></div>
+      <div>• <span class="highlight">Pinch (Thumb+Index):</span> Volume</div>
+      <div>• <span class="highlight">Hand Y (Up/Down):</span> Scale</div>
+      <div>• <span class="highlight">Hand X:</span> Hue + X-Rotation</div>
+
+      <div style="margin-top:10px;"><b>Gestures:</b></div>
+      <div>• <span class="highlight">1 Finger:</span> Heart</div>
+      <div>• <span class="highlight">2 Fingers:</span> Fireworks</div>
+      <div>• <span class="highlight">3 Fingers:</span> <b>Yes</b> </div>
+      <div>• <span class="highlight">4 Fingers:</span> Fireworks</div>
+      <div>• <span class="highlight">5 Fingers:</span> <b>No</b> </div>
+    </div>
+  </div>
+
+  <video id="input_video"></video>
+
+  <audio id="background-music" autoplay loop>
+    <source src="CosmicLove.mp3" type="audio/mpeg">
+    Your browser does not support the audio element.
+  </audio>
+
+  <!-- VERTEX SHADER -->
+  <script id="vertexShader" type="x-shader/x-vertex">
+    uniform float uTime;
+    uniform float uScale;
+    uniform float uHue;
+
+    // Smooth transitions
+    uniform float uFromTemplate;
+    uniform float uToTemplate;
+    uniform float uMorph;   // 0..1
+
+    uniform float uRotX;    // rotation influenced by hand X
+
+    attribute vec3 aRandom;
+    attribute float aSize;
+
+    attribute vec3 aTargetTextA; // Valentine
+    attribute vec3 aTargetTextB; // I LOVE YOU
+
+    varying vec3 vColor;
+
+    #define PI 3.14159265359
+
+    vec3 rotate(vec3 v, vec3 axis, float angle) {
+      return mix(dot(axis, v) * axis, v, cos(angle)) + cross(axis, v) * sin(angle);
+    }
+
+    vec3 hsl2rgb(vec3 c) {
+      vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+      return c.z + c.y * (rgb - 0.5) * (1.0 - abs(2.0 * c.z - 1.0));
+    }
+
+    // Templates:
+    // 0 = Fireworks
+    // 1 = Heart
+    // 2 = Text A (Valentine)
+    // 3 = Text B (I LOVE YOU)
+    vec3 templatePos(float templateId, float t) {
+      vec3 p = vec3(0.0);
+
+      // --- FIREWORKS ---
+      if (abs(templateId - 0.0) < 0.1) {
+        vec3 dir = normalize(aRandom);
+        float burst = mod(t + length(aRandom), 2.0);
+        p = dir * burst * 30.0;
+      }
+
+      // --- HEART ---
+      else if (abs(templateId - 1.0) < 0.1) {
+        float phi = aRandom.x * PI * 2.0;
+
+        float x = 16.0 * pow(sin(phi), 3.0);
+        float y = 13.0 * cos(phi) - 5.0 * cos(2.0*phi) - 2.0 * cos(3.0*phi) - cos(4.0*phi);
+
+        p = vec3(x, y, aRandom.z * 5.0);
+        p *= 0.5;
+        p = rotate(p, vec3(0.0, 1.0, 0.0), t * 0.5);
+      }
+
+      // --- TEXT A: Valentine ---
+      else if (abs(templateId - 2.0) < 0.1) {
+        p = aTargetTextA;
+        float w = sin(t * 2.0 + aRandom.x * 10.0) * 0.25;
+        p.y += w;
+        p = rotate(p, vec3(0.0, 1.0, 0.0), sin(t * 0.3) * 0.12);
+      }
+
+      // --- TEXT B: I LOVE YOU ---
+      else if (abs(templateId - 3.0) < 0.1) {
+        p = aTargetTextB;
+        float w = sin(t * 2.0 + aRandom.y * 10.0) * 0.25;
+        p.y += w;
+        p = rotate(p, vec3(0.0, 1.0, 0.0), sin(t * 0.3) * 0.12);
+      }
+
+      return p;
+    }
+
+    void main() {
+      float t = uTime * 0.5;
+
+      vec3 fromPos = templatePos(uFromTemplate, t);
+      vec3 toPos   = templatePos(uToTemplate, t);
+
+      float k = smoothstep(0.0, 1.0, uMorph);
+      vec3 finalPos = mix(fromPos, toPos, k);
+
+      // scale: keep text steadier
+      bool isText = (abs(uToTemplate - 2.0) < 0.1) || (abs(uToTemplate - 3.0) < 0.1);
+      if (isText) finalPos *= mix(1.0, uScale, 0.25);
+      else        finalPos *= uScale;
+
+      // add rotation from hand X (rotate around X axis)
+      finalPos = rotate(finalPos, vec3(1.0, 0.0, 0.0), uRotX);
+
+      // color
+      float hue = fract(uHue + length(finalPos) * 0.01);
+      vColor = hsl2rgb(vec3(hue, 0.8, 0.6));
+
+      vec4 mvPosition = modelViewMatrix * vec4(finalPos, 1.0);
+      gl_Position = projectionMatrix * mvPosition;
+
+      gl_PointSize = (5.0 * aSize * uScale) * (30.0 / -mvPosition.z);
+    }
+  </script>
+
+  <!-- FRAGMENT SHADER -->
+  <script id="fragmentShader" type="x-shader/x-fragment">
+    varying vec3 vColor;
+
+    void main() {
+      vec2 coord = gl_PointCoord - vec2(0.5);
+      if (length(coord) > 0.5) discard;
+
+      float strength = 1.0 - (length(coord) * 2.0);
+      strength = pow(strength, 1.5);
+
+      gl_FragColor = vec4(vColor, strength);
+    }
+  </script>
+
+  <script>
+    // --- THREE SETUP ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 40;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    // --- TEXT TARGETS (Canvas -> Points) ---
+    function buildTextTargets(textLines, opts = {}) {
+      const W = opts.width ?? 1024;
+      const H = opts.height ?? 512;
+      const step = opts.step ?? 3;
+      const threshold = opts.threshold ?? 30;
+      const scale = opts.scale ?? 0.06;
+      const lineGap = opts.lineGap ?? 120;
+      const font = opts.font ?? "bold 96px Segoe UI, Arial, sans-serif";
+
+      const canvas = document.createElement("canvas");
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext("2d");
+
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = "white";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = font;
+
+      const cx = W / 2;
+      const cy = H / 2;
+
+      const lines = Array.isArray(textLines) ? textLines : [textLines];
+      const startY = cy - (lines.length - 1) * (lineGap / 2);
+
+      lines.forEach((line, i) => ctx.fillText(line, cx, startY + i * lineGap));
+
+      const img = ctx.getImageData(0, 0, W, H).data;
+      const pts = [];
+
+      for (let y = 0; y < H; y += step) {
+        for (let x = 0; x < W; x += step) {
+          const idx = (y * W + x) * 4;
+          const a = img[idx + 3];
+          if (a > threshold) {
+            const wx = (x - W / 2) * scale;
+            const wy = -(y - H / 2) * scale;
+            const wz = (Math.random() - 0.5) * 1.5;
+            pts.push([wx, wy, wz]);
+          }
+        }
+      }
+      return pts;
+    }
+
+    const textValentine = buildTextTargets(["WILL YOU BE", "MY VALENTINE?"], { step: 3, scale: 0.06 });
+    const textILoveYou  = buildTextTargets(["I LOVE YOU"], { step: 3, scale: 0.085, font: "bold 130px Segoe UI, Arial, sans-serif" });
+
+    // --- PARTICLES ---
+    const count = 30000;
+    const geometry = new THREE.BufferGeometry();
+
+    const positions = new Float32Array(count * 3);
+    const randoms   = new Float32Array(count * 3);
+    const sizes     = new Float32Array(count);
+
+    const targetsA  = new Float32Array(count * 3);
+    const targetsB  = new Float32Array(count * 3);
+
+    for (let i = 0; i < count; i++) {
+      positions[i*3] = 0; positions[i*3+1] = 0; positions[i*3+2] = 0;
+
+      randoms[i*3]   = (Math.random() - 0.5) * 2;
+      randoms[i*3+1] = (Math.random() - 0.5) * 2;
+      randoms[i*3+2] = (Math.random() - 0.5) * 2;
+
+      sizes[i] = Math.random();
+
+      const pA = textValentine[i % textValentine.length];
+      targetsA[i*3]   = pA[0];
+      targetsA[i*3+1] = pA[1];
+      targetsA[i*3+2] = pA[2];
+
+      const pB = textILoveYou[i % textILoveYou.length];
+      targetsB[i*3]   = pB[0];
+      targetsB[i*3+1] = pB[1];
+      targetsB[i*3+2] = pB[2];
+    }
+
+    geometry.setAttribute('position',      new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aRandom',       new THREE.BufferAttribute(randoms, 3));
+    geometry.setAttribute('aSize',         new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute('aTargetTextA',  new THREE.BufferAttribute(targetsA, 3));
+    geometry.setAttribute('aTargetTextB',  new THREE.BufferAttribute(targetsB, 3));
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: document.getElementById('vertexShader').textContent,
+      fragmentShader: document.getElementById('fragmentShader').textContent,
+      uniforms: {
+        uTime: { value: 0 },
+        uScale: { value: 1.0 },
+        uHue: { value: 0.5 },
+        uFromTemplate: { value: 0.0 },
+        uToTemplate: { value: 0.0 },   // startup Fireworks
+        uMorph: { value: 1.0 },
+        uRotX: { value: 0.0 }
+      },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    // --- SMOOTH TEMPLATE SWITCHING ---
+    // Templates:
+    // 0 Fireworks, 1 Heart, 2 Valentine Text, 3 I LOVE YOU Text
+    let currentTemplate = 0;
+    let morphing = false;
+    let morphStart = 0;
+    let morphDuration = 0.75; // seconds (tweak)
+
+    function switchTemplate(nextTemplate, duration = 0.75) {
+      if (nextTemplate === currentTemplate) return;
+
+      currentTemplate = nextTemplate;
+      morphing = true;
+      morphStart = clock.getElapsedTime();
+      morphDuration = duration;
+
+      material.uniforms.uFromTemplate.value = material.uniforms.uToTemplate.value;
+      material.uniforms.uToTemplate.value = nextTemplate;
+      material.uniforms.uMorph.value = 0.0;
+    }
+
+    // --- ANIMATION LOOP ---
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const now = clock.getElapsedTime();
+      material.uniforms.uTime.value = now;
+
+      if (morphing) {
+        const k = (now - morphStart) / morphDuration;
+        material.uniforms.uMorph.value = THREE.MathUtils.clamp(k, 0.0, 1.0);
+        if (k >= 1.0) {
+          morphing = false;
+          material.uniforms.uMorph.value = 1.0;
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- MEDIAPIPE HANDS ---
+    const videoElement = document.getElementById('input_video');
+    const statusText = document.getElementById('status-text');
+    const loadingText = document.getElementById('loading');
+
+    const audio = document.getElementById('background-music');
+    const audioButton = document.getElementById('audio-control');
+
+    function toggleAudio() {
+      if (audio.paused) {
+        audio.play();
+        audioButton.textContent = '🔊';
+      } else {
+        audio.pause();
+        audioButton.textContent = '🔇';
+      }
+    }
+    audio.play().catch(() => console.log('Autoplay blocked - click speaker button to start music'));
+
+    // Gesture stability
+    let lastWantedTemplate = 0;
+    let lastSwitchTime = 0;
+    const SWITCH_COOLDOWN = 0.20; // seconds
+
+    function onResults(results) {
+      loadingText.style.display = 'none';
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        statusText.innerText = "Hand Detected";
+        statusText.style.color = "#00ffcc";
+
+        const landmarks = results.multiHandLandmarks[0];
+
+        // A) PINCH -> VOLUME
+        const thumbTip = landmarks[4];
+        const indexTip = landmarks[8];
+        const pinchDist = Math.sqrt(
+          Math.pow(thumbTip.x - indexTip.x, 2) +
+          Math.pow(thumbTip.y - indexTip.y, 2)
+        );
+
+        let volume = THREE.MathUtils.mapLinear(pinchDist, 0.02, 0.20, 0.0, 1.0);
+        volume = THREE.MathUtils.clamp(volume, 0.0, 1.0);
+        audio.volume = volume;
+
+        // B) HAND Y -> SCALE (up = bigger)
+        let scale = THREE.MathUtils.mapLinear(landmarks[0].y, 0.15, 0.85, 3.0, 0.6);
+        scale = THREE.MathUtils.clamp(scale, 0.6, 3.0);
+        material.uniforms.uScale.value = scale;
+
+        // C) HAND X -> HUE + X-ROTATION
+        // mirrored video
+        const x = 1.0 - landmarks[0].x;
+
+        // hue
+        material.uniforms.uHue.value = x;
+
+        // rotation around X axis (centered around 0.5)
+        // map x 0..1 -> -0.9..+0.9 radians (tweak)
+        let rotX = THREE.MathUtils.mapLinear(x, 0.0, 1.0, -0.9, 0.9);
+        // soften
+        material.uniforms.uRotX.value = THREE.MathUtils.lerp(material.uniforms.uRotX.value, rotX, 0.15);
+
+        // D) FINGER COUNT
+        let fingersUp = 0;
+
+        if (landmarks[8].y  < landmarks[6].y)  fingersUp++; // index
+        if (landmarks[12].y < landmarks[10].y) fingersUp++; // middle
+        if (landmarks[16].y < landmarks[14].y) fingersUp++; // ring
+        if (landmarks[20].y < landmarks[18].y) fingersUp++; // pinky
+
+        // Thumb heuristic (mirrored view; if it’s wrong for your hand, flip > to <)
+        const thumbTipX = landmarks[4].x;
+        const thumbIPX  = landmarks[3].x;
+        if (thumbTipX > thumbIPX) fingersUp++;
+
+        // Mapping you requested:
+        // 1 finger -> Heart (1)
+        // 2 fingers -> Fireworks (0)
+        // 3 fingers -> I LOVE YOU (3)  [Yes]
+        // 4 fingers -> Fireworks (0)
+        // 5 fingers -> Valentine (2)   [No]
+        let wanted = lastWantedTemplate;
+
+        if (fingersUp === 1) wanted = 1;
+        else if (fingersUp === 2) wanted = 0;
+        else if (fingersUp === 3) wanted = 3;
+        else if (fingersUp === 4) wanted = 0;
+        else if (fingersUp === 5) wanted = 2;
+
+        const now = clock.getElapsedTime();
+        if (wanted !== lastWantedTemplate && (now - lastSwitchTime) > SWITCH_COOLDOWN) {
+          lastWantedTemplate = wanted;
+          lastSwitchTime = now;
+          switchTemplate(wanted, 0.75);
+        }
+
+      } else {
+        statusText.innerText = "Waiting for hand...";
+        statusText.style.color = "#aaa";
+      }
+    }
+
+    const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+      onFrame: async () => { await hands.send({ image: videoElement }); },
+      width: 640,
+      height: 480
+    });
+
+    cameraUtils.start().catch(err => {
+      console.error("Camera error:", err);
+      loadingText.innerText = "Error: Camera access denied or not available.";
+    });
+  </script>
+</body>
+</html>
